@@ -12,5 +12,5 @@ class Analyst(BaseModel):
     def persona(self)->str:
         return f"Name : {self.name}\n Role: {self.role} \n Affiliation: {self.affiliation} \n Description: {self.description}"
 
-class Perspective(BaseModel):
+class Perspectives(BaseModel):
     analysts : List[Analyst] = Field(description=" Comprehensive list of analysts with their role, name, affiliation and description")
