@@ -37,9 +37,9 @@ def human_feedback(state: GenerateAnalystState):
         "question": "Are these analysts OK for you?",
         "analysts": [
             analyst.model_dump() if hasattr(analyst, "model_dump") else analyst
-                 for analyst in state.get("analyst",[])
+                 for analyst in state.get("analysts", [])
         ],
-        "isntructions": "Return feedback to regenrate analyst"
+        "instructions": "Return feedback to regenrate analyst"
         " or return empty/perfect/contunue/okay to approve  and continue the graph."
     })
 
