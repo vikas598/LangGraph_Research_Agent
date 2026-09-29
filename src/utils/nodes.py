@@ -1,10 +1,11 @@
 from dotenv import load_dotenv
 from .states import GenerateAnalystState, InterviewState
 from .models import llm
-from .objects import Analyst, Perspectives
-from .prompts import analyst_instructions, question_instructions
+from .objects import Analyst, Perspectives, SearchQuery
+from .prompts import analyst_instructions, question_instructions, search_instructions
 from langchain.messages import SystemMessage, HumanMessage
 from langgraph.types import interrupt
+from langchain_tavily import TavilySearch
 
 load_dotenv()
 
@@ -75,3 +76,52 @@ def generate_question(state: InterviewState):
     questions = llm.invoke([SystemMessage(content=system_message)]+messages)
 
     return {"messages":[questions]}
+
+def search_web(state: InterviewState):
+    """retrieve docs from web"""
+
+    # search query
+    structured_llm = llm.with_structured_output(SearchQuery)
+
+    # search instruction
+    search_instruction_system_message = SystemMessage(content=search_instructions)
+    tavily_search = TavilySearch(max_results = 3)
+
+    search_query = structured_llm.invoke([search_instruction_system_message]+state["messages"])
+
+    # web search
+    data = tavily_search.invoke({"querys":search_query.search_query})
+    search_docs = data.get("results", data)
+
+    #format
+    formatted_search_docs = "\n\n---\n\n".join(
+        [
+            f'<Document href = "{doc["url"]}"/>\n{doc["content"]}\n</Document>'
+            for doc in search_docs
+        ]
+    )
+
+def search_web_2(state: InterviewState):
+    """retrieve docs from web"""
+
+    # search query
+    structured_llm = llm.with_structured_output(SearchQuery)
+
+    # search instruction
+    search_instruction_system_message = SystemMessage(content=search_instructions)
+    tavily_search = TavilySearch(max_results = 3)
+
+    search_query = structured_llm.invoke([search_instruction_system_message]+state["messages"])
+
+    # web search
+    data = tavily_search.invoke({"querys":search_query.search_query})
+    search_docs = data.get("results", data)
+
+    #format
+    formatted_search_docs = "\n\n---\n\n".join(
+        [
+            f'<Document href = "{doc["url"]}"/>\n{doc["content"]}\n</Document>'
+            for doc in search_docs
+        ]
+    )
+
