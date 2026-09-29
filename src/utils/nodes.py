@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 from .states import GenerateAnalystState, InterviewState
 from .models import llm
 from .objects import Analyst, Perspectives, SearchQuery
-from .prompts import analyst_instructions, question_instructions, search_instructions
+from .prompts import analyst_instructions, question_instructions, search_instructions, answer_instructions
 from langchain.messages import SystemMessage, HumanMessage
 from langgraph.types import interrupt
 from langchain_tavily import TavilySearch
@@ -125,3 +125,19 @@ def search_web_2(state: InterviewState):
         ]
     )
 
+def generate_answer(state: InterviewState):
+    """node to answer a query"""
+
+    # get state
+    analyst = state["analyst"]
+    messages = state["messages"]
+    context = state["context"]
+
+    #answer question
+    system_message = SystemMessage(content=answer_instructions.format(goals=analyst.persona, context = context))
+    answer= llm.invoke([system_message]+messages)
+
+    # name the msg as coming from the expert
+    answer.name = "expert"
+
+    return {"message":[answer]}
