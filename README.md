@@ -26,9 +26,8 @@ The project demonstrates several practical agent patterns:
 
 | File | Responsibility |
 |---|---|
-| `src/agent.py` | Analyst-generation graph with human feedback interrupt |
+| `src/agent.py` | Full research graph that creates analysts, runs interviews, and finalizes the report |
 | `src/answering_questions.py` | Interview subgraph for question generation, search, answer generation, and section writing |
-| `src/deep_agent.py` | Full research graph that creates analysts, runs interviews, and finalizes the report |
 | `src/utils/nodes.py` | Graph node implementations for analysts, interviews, search, and report writing |
 | `src/utils/edges.py` | Conditional routing logic and interview fan-out |
 | `src/utils/states.py` | TypedDict and message-state definitions used by the graphs |
