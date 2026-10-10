@@ -68,7 +68,7 @@ def generate_question(state: InterviewState):
     analyst = state["analyst"]
 
     if isinstance(analyst, dict):
-        analyst = analyst.model_validate(analyst)
+        analyst = Analyst.model_validate(analyst)
 
     messages = state["messages"]
 
@@ -91,7 +91,7 @@ def search_web(state: InterviewState):
     search_query = structured_llm.invoke([search_instruction_system_message]+state["messages"])
 
     # web search
-    data = tavily_search.invoke({"querys":search_query.search_query})
+    data = tavily_search.invoke({"query":search_query.search_query})
     search_docs = data.get("results", data)
 
     #format
@@ -101,6 +101,8 @@ def search_web(state: InterviewState):
             for doc in search_docs
         ]
     )
+
+    return {"context": [formatted_search_docs]}
 
 def search_web_2(state: InterviewState):
     """retrieve docs from web"""
@@ -115,7 +117,7 @@ def search_web_2(state: InterviewState):
     search_query = structured_llm.invoke([search_instruction_system_message]+state["messages"])
 
     # web search
-    data = tavily_search.invoke({"querys":search_query.search_query})
+    data = tavily_search.invoke({"query":search_query.search_query})
     search_docs = data.get("results", data)
 
     #format
@@ -126,6 +128,8 @@ def search_web_2(state: InterviewState):
         ]
     )
 
+    return {"context": [formatted_search_docs]}
+
 def generate_answer(state: InterviewState):
     """node to answer a query"""
 
@@ -134,6 +138,9 @@ def generate_answer(state: InterviewState):
     messages = state["messages"]
     context = state["context"]
 
+    if isinstance(analyst, dict):
+        analyst = Analyst.model_validate(analyst)
+
     #answer question
     system_message = SystemMessage(content=answer_instructions.format(goals=analyst.persona, context = context))
     answer= llm.invoke([system_message]+messages)
@@ -141,7 +148,7 @@ def generate_answer(state: InterviewState):
     # name the msg as coming from the expert
     answer.name = "expert"
 
-    return {"message":[answer]}
+    return {"messages":[answer]}
 
 def save_interview(state: InterviewState):
     """save interview"""
