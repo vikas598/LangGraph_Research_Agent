@@ -32,6 +32,10 @@ def route_messages(state:InterviewState, name:str ="expert"):
     if num_response>=max_num_turns:
         return "save_interview"
 
+    # messages[-1] is the expert's answer, messages[-2] is the analyst's last question
+    if len(messages) >= 2 and "Thank you so much for your help" in messages[-2].text:
+        return "save_interview"
+
     return "ask_question"
 
 def initiate_all_interviews(state:ResearchGraphState):

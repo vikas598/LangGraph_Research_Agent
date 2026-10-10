@@ -1,11 +1,11 @@
 # LangGraph Research Assistant
 
-> A multi-agent research workflow that creates analyst personas, runs parallel interview loops with web search, and synthesizes the results into a cited report using LangGraph, LangChain, OpenAI, and Tavily.
+> A multi-agent research workflow that creates analyst personas, runs parallel interview loops grounded in web and Wikipedia search, and synthesizes the results into a cited Markdown report using LangGraph, LangChain, Groq, and Tavily.
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-Orchestration-1C3C3C)](https://www.langchain.com/langgraph)
 [![LangChain](https://img.shields.io/badge/LangChain-LLM%20Workflows-1C3C3C)](https://www.langchain.com/)
-[![OpenAI](https://img.shields.io/badge/OpenAI-gpt--4o-412991?logo=openai&logoColor=white)](https://platform.openai.com/)
+[![Groq](https://img.shields.io/badge/Groq-gpt--oss--20b-F55036)](https://console.groq.com/)
 [![Tavily](https://img.shields.io/badge/Tavily-Web%20Search-0EA5E9)](https://www.tavily.com/)
 [![uv](https://img.shields.io/badge/uv-Package%20Manager-DE5FE9)](https://docs.astral.sh/uv/)
 
@@ -13,28 +13,29 @@
 
 ## What Is This?
 
-This project is a LangGraph-powered research assistant inspired by analyst interview workflows. Given a research topic, the system generates a panel of analyst personas, gives the user a chance to approve or revise them, sends each analyst through an interview loop, gathers web context with Tavily, and combines the resulting memos into a final Markdown report.
+Given a research topic, this LangGraph app generates a panel of analyst personas, lets you approve or revise them, and then sends each analyst through an interview with an "expert" whose answers are grounded in Tavily web search and Wikipedia. Each interview becomes a report section, and the sections are combined into a final Markdown report with an introduction, conclusion, and sources.
 
 The project demonstrates several practical agent patterns:
 
-- Human-in-the-loop review before the research process begins.
+- Human-in-the-loop review using LangGraph `interrupt`.
 - Structured analyst generation with Pydantic models.
 - Parallel interview fan-out using LangGraph's `Send` API.
-- Search-grounded question answering with Tavily.
-- Map-reduce style report writing across analyst sections.
-- LangGraph graph configuration for local development and Studio inspection.
+- Parallel retrieval from two sources (Tavily + Wikipedia) inside each interview turn.
+- Map-reduce report writing: sections are written per analyst, then reduced into one report.
+- Client-side rate limiting and retries to stay within free-tier API limits.
 
 | File | Responsibility |
 |---|---|
-| `src/agent.py` | Full research graph that creates analysts, runs interviews, and finalizes the report |
-| `src/answering_questions.py` | Interview subgraph for question generation, search, answer generation, and section writing |
-| `src/utils/nodes.py` | Graph node implementations for analysts, interviews, search, and report writing |
-| `src/utils/edges.py` | Conditional routing logic and interview fan-out |
-| `src/utils/states.py` | TypedDict and message-state definitions used by the graphs |
-| `src/utils/objects.py` | Pydantic models for analyst personas and structured outputs |
-| `src/utils/prompts.py` | Prompt templates for analyst creation, interviews, search, and report synthesis |
-| `src/utils/models.py` | OpenAI chat model initialization |
-| `langgraph.json` | LangGraph CLI/Studio graph registration |
+| `src/agent.py` | Full research graph: analysts → feedback → interviews → report |
+| `src/creating_analysts.py` | Standalone graph for generating and reviewing analysts |
+| `src/answering_questions.py` | Interview subgraph: question, search, answer, section writing |
+| `src/utils/nodes.py` | Node implementations for analysts, interviews, search, and report writing |
+| `src/utils/edges.py` | Conditional routing and the interview fan-out |
+| `src/utils/states.py` | State definitions for the three graphs |
+| `src/utils/objects.py` | Pydantic models for analysts and structured outputs |
+| `src/utils/prompts.py` | Prompt templates |
+| `src/utils/models.py` | Groq chat model setup with rate limiting and retries |
+| `langgraph.json` | LangGraph CLI / Studio graph registration |
 
 ---
 
@@ -42,9 +43,11 @@ The project demonstrates several practical agent patterns:
 
 ### Full Research Graph
 
-![LangGraph research workflow](<img\Screenshot 2026-10-10 101749.png>)
+![LangGraph research workflow](img/graph.png)
 
-The full graph creates analyst personas, pauses for human feedback, runs interview subgraphs, writes report sections, and then produces the final introduction, body, conclusion, and source list.
+The full graph creates analyst personas, pauses for human feedback, runs one interview subgraph per analyst, writes a section from each, and then produces the introduction, report body, and conclusion in parallel before assembling the final report.
+
+> The screenshot was taken before the second search node was switched to Wikipedia, so it still shows `search_web2` where the graph now has `search_wikipedia`.
 
 ---
 
@@ -52,49 +55,45 @@ The full graph creates analyst personas, pauses for human feedback, runs intervi
 
 ### Analyst Generation
 
-- Generates a configurable number of analyst personas for a research topic.
-- Uses structured output through `Perspectives` and `Analyst` Pydantic models.
-- Captures analyst name, role, affiliation, description, and persona text.
-- Supports human review through a LangGraph interrupt before continuing.
+- Generates a configurable number of analyst personas for a topic.
+- Uses structured output through the `Perspectives` and `Analyst` Pydantic models.
+- Pauses with an `interrupt` so you can approve the analysts or give feedback to regenerate them.
+- Blank input, `ok`, `okay`, `perfect`, `continue`, or `next` approves the analysts; anything else is treated as feedback.
 
 ### Interview Workflow
 
-- Each analyst starts with a topic-aware opening question.
-- The expert answer is grounded in retrieved context.
-- The interview loop continues until the maximum number of expert turns is reached or the analyst closes the interview.
-- Finished interviews are saved as transcripts and converted into short report sections.
+- Each analyst starts from a topic-aware opening message.
+- Every turn, the analyst asks a question, both search nodes retrieve context in parallel, and the expert answers using only that context, with citations.
+- Each speaker sees the conversation from its own side (its own turns as AI messages, the other side's as user messages), which keeps requests valid for models that don't allow assistant-message prefilling.
+- The interview ends after `max_num_turns` expert answers (default 2) or when the analyst closes with "Thank you so much for your help!".
+- The transcript and sources are turned into a short report section.
 
 ### Web Research
 
-- Tavily search is used to retrieve external context for analyst questions.
-- Search queries are generated from the conversation state rather than hard-coded.
-- Retrieved documents are formatted with source URLs for downstream citation.
+- **Tavily**: top 2 web results, each trimmed to 600 characters.
+- **Wikipedia**: top page, trimmed to 1,500 characters.
+- Search queries are generated from the conversation, not hard-coded.
+- A failed search is logged and skipped instead of crashing the run.
+- The expert only receives the current turn's search results, so prompts don't grow with every turn.
 
 ### Report Synthesis
 
-- Analyst sections are gathered into a consolidated report body.
-- Introduction and conclusion are generated as separate graph nodes.
-- Final output is assembled into a Markdown report with preserved citations and sources.
+- Analyst sections are consolidated into a single report body.
+- Introduction and conclusion are written by separate nodes in parallel.
+- The final report combines introduction, body, conclusion, and a deduplicated sources list.
 
 ---
 
 ## How It Works
 
-1. **The user provides a topic.** The graph receives a research topic and a maximum number of analysts.
-
-2. **Analyst personas are generated.** `create_analysts` uses the OpenAI model with structured output to create distinct expert perspectives.
-
-3. **Human feedback is requested.** The graph interrupts before `human_feedback`, allowing the user to approve the analysts or request changes.
-
-4. **Interviews run in parallel.** When approved, `initiate_all_interviews` fans out one interview subgraph per analyst.
-
-5. **Each interview searches the web.** The interview graph generates search queries from the current conversation and retrieves context through Tavily.
-
-6. **Expert answers are generated.** The model answers using only the retrieved context and includes source references.
-
-7. **Sections are written.** Each completed interview becomes a concise report section.
-
-8. **The final report is assembled.** The graph writes the introduction, report body, conclusion, and final Markdown output.
+1. **You provide a topic** and the maximum number of analysts.
+2. **Analysts are generated.** `create_analysts` asks the model for structured analyst personas.
+3. **You review them.** `human_feedback` interrupts the graph. Approve to continue, or send feedback to regenerate.
+4. **Interviews run in parallel.** `initiate_all_interviews` uses `Send` to start one interview subgraph per analyst.
+5. **Each turn is search-grounded.** The analyst's question is turned into a search query, and Tavily and Wikipedia are queried in parallel.
+6. **The expert answers** using only the retrieved context, with numbered citations.
+7. **Sections are written.** Each finished interview becomes a section, which is passed back to the parent graph through the shared `sections` key.
+8. **The report is assembled.** `write_report`, `write_introduction`, and `write_conclusion` run in parallel, then `finalize_report` combines them into `final_report`.
 
 ---
 
@@ -103,62 +102,57 @@ The full graph creates analyst personas, pauses for human feedback, runs intervi
 ```text
 Research topic
     -> create_analysts
-        -> Analyst personas
     -> human_feedback
-        -> regenerate analysts when feedback is provided
-        -> continue when approved
-    -> conduct_interview for each analyst
+        -> feedback given: back to create_analysts
+        -> approved: fan out one interview per analyst (Send API)
+    -> conduct_interview  (subgraph, one per analyst)
         -> ask_question
-        -> search_web
-        -> search_web2
+        -> search_web + search_wikipedia   (parallel)
         -> answer_question
-        -> repeat until max turns
+        -> repeat until max turns or the analyst ends the interview
         -> save_interview
-        -> write_section
-    -> write_report
-    -> write_introduction
-    -> write_conclusion
+        -> write_section   -> sections
+    -> write_report + write_introduction + write_conclusion   (parallel)
     -> finalize_report
-    -> final Markdown report
+    -> final_report (Markdown)
 ```
 
-Registered graphs in `langgraph.json`:
+Graphs registered in `langgraph.json`:
 
 | Graph | Entry Point | Purpose |
 |---|---|---|
-| `create_analysts` | `src/agent.py:graph` | Generate and review analyst personas |
-| `asnwer_question` | `src/answering_questions.py:question_answer_graph` | Run a single interview workflow |
-| `deep_agent` | `src/deep_agent.py:graph` | Run the complete research and reporting workflow |
+| `agent` | `src/agent.py:graph` | Full research and reporting workflow |
+| `create_analysts` | `src/creating_analysts.py:graph` | Generate and review analyst personas only |
+| `asnwer_question` | `src/answering_questions.py:question_answer_graph` | Run a single interview |
 
 ---
 
 ## Project Structure
 
 ```text
-LangGraph_Assistant/
+research_agent/
 |
 +-- main.py
 +-- langgraph.json
 +-- pyproject.toml
 +-- uv.lock
 +-- README.md
-+-- screenshots/
-|   `-- Screenshot 2026-09-08 101749.png
++-- img/
+|   `-- Screenshot 2026-10-10 101749.png
 +-- src/
+|   +-- __init__.py
 |   +-- agent.py
 |   +-- answering_questions.py
-|   +-- deep_agent.py
-|   +-- __init__.py
+|   +-- creating_analysts.py
 |   `-- utils/
+|       +-- __init__.py
 |       +-- edges.py
 |       +-- models.py
 |       +-- nodes.py
 |       +-- objects.py
 |       +-- prompts.py
-|       +-- states.py
-|       +-- tools.py
-|       `-- __init__.py
-`-- .env
+|       `-- states.py
+`-- .env              (not committed)
 ```
 
 ---
@@ -170,16 +164,11 @@ LangGraph_Assistant/
 | Requirement | Notes |
 |---|---|
 | Python 3.12+ | Required by `pyproject.toml` |
-| `uv` | Used for dependency installation and command execution |
-| OpenAI API key | Required for `ChatOpenAI` |
-| Tavily API key | Required for web search |
+| `uv` | Dependency installation and command execution |
+| Groq API key | For the `openai/gpt-oss-20b` model |
+| Tavily API key | For web search |
 
-Check your local versions:
-
-```bash
-python --version
-uv --version
-```
+Wikipedia search needs no API key.
 
 If `uv` is not installed:
 
@@ -190,8 +179,8 @@ pip install uv
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/<your-username>/LangGraph_Assistant.git
-cd LangGraph_Assistant
+git clone https://github.com/<your-username>/research_agent.git
+cd research_agent
 ```
 
 ### 2. Install dependencies
@@ -200,56 +189,43 @@ cd LangGraph_Assistant
 uv sync
 ```
 
-This creates the virtual environment and installs the locked dependencies from `uv.lock`.
-
 ### 3. Configure environment variables
 
 Create a `.env` file in the project root:
 
 ```env
-OPENAI_API_KEY=your_openai_api_key_here
+GROQ_API_KEY=your_groq_api_key_here
 TAVILY_API_KEY=your_tavily_api_key_here
+
+# Optional: tracing in LangSmith
+LANGSMITH_API_KEY=your_langsmith_api_key_here
+LANGSMITH_PROJECT=research_agent
 ```
 
-Keep `.env` local and do not commit real API keys.
-
-### 4. Run with LangGraph
-
-Start the LangGraph development server:
+### 4. Run with LangGraph Studio
 
 ```bash
 uv run langgraph dev
 ```
 
-Then open the local LangGraph Studio URL shown in your terminal. The configured graphs are loaded from `langgraph.json`.
+Open the Studio URL shown in the terminal and pick the `agent` graph.
 
 ---
 
-## Example Inputs
+## Example Input
 
-### Analyst Generation
-
-Use the `create_analysts` graph with state like:
-
-```json
-{
-  "topic": "How autonomous AI agents are changing software engineering teams",
-  "max_analysts": 3
-}
-```
-
-### Full Research Report
-
-Use the `deep_agent` graph with state like:
+Start the `agent` graph with:
 
 ```json
 {
   "topic": "The business impact of retrieval-augmented generation in enterprise support teams",
-  "max_analysts": 3
+  "max_analysts": 2
 }
 ```
 
-The full graph returns a `final_report` field containing the generated Markdown report.
+The graph pauses at `human_feedback` and shows the generated analysts. Resume with `ok` to continue, or with feedback such as `add an analyst focused on cost` to regenerate them.
+
+When the run finishes, the `final_report` field contains the Markdown report.
 
 ---
 
@@ -257,8 +233,27 @@ The full graph returns a `final_report` field containing the generated Markdown 
 
 | Variable | Required | Purpose |
 |---|---:|---|
-| `OPENAI_API_KEY` | Yes | Authenticates the OpenAI chat model used by LangChain |
+| `GROQ_API_KEY` | Yes | Authenticates the Groq chat model |
 | `TAVILY_API_KEY` | Yes | Authenticates Tavily web search |
+| `LANGSMITH_API_KEY` | No | Enables LangSmith tracing |
+| `LANGSMITH_PROJECT` | No | LangSmith project name for traces |
+
+---
+
+## Rate Limits and Run Time
+
+Groq's free tier limits `openai/gpt-oss-20b` to 8,000 tokens per minute across all requests. A full run with 2 analysts makes roughly 20 model calls, so the app is configured to stay under that limit. All of these settings are in `src/utils/models.py`:
+
+| Setting | Value | Why |
+|---|---|---|
+| `InMemoryRateLimiter` | ~5 requests/min, no bursts | Shared by every node, including the parallel interviews |
+| `max_retries` | 5 | Waits and retries after a 429 instead of failing |
+| `max_tokens` | 1024 | Limits the output tokens reserved per request |
+| `reasoning_effort` | `low` | gpt-oss is a reasoning model; less reasoning uses fewer tokens |
+
+Together with the trimmed search results, a 2-analyst run takes about **4–6 minutes**. If your plan has higher limits, raise `requests_per_second` to make runs faster.
+
+To use a different model, edit `llm` in `src/utils/models.py`. `langchain-google-genai` is also installed if you want to switch to Gemini; set `GOOGLE_API_KEY` and adjust the rate limiter to that model's limits.
 
 ---
 
@@ -266,12 +261,13 @@ The full graph returns a `final_report` field containing the generated Markdown 
 
 | Choice | Reason |
 |---|---|
-| LangGraph state machines | Makes the agent workflow explicit, inspectable, and easier to debug |
-| Human feedback interrupt | Allows analyst personas to be reviewed before expensive research begins |
+| LangGraph state machines | Makes the workflow explicit, inspectable, and easy to debug in Studio |
+| Human feedback interrupt | Lets you fix the analyst panel before spending API calls on research |
 | Structured analyst objects | Keeps persona generation predictable and type-safe |
-| Interview subgraph | Encapsulates repeated question, search, answer, and section-writing behavior |
-| Parallel fan-out | Lets each analyst pursue their own research direction independently |
-| Separate report nodes | Keeps introduction, body, conclusion, and final assembly easy to iterate on |
+| Interview subgraph | Encapsulates the repeated question → search → answer loop |
+| Two retrieval sources | Tavily gives current web results; Wikipedia gives stable background |
+| Speaker-relative message view | Each LLM call ends with a user message, as chat models expect |
+| Shared rate limiter | One limiter covers all parallel calls, so the fan-out can't burst past API limits |
 
 ---
 
@@ -279,50 +275,45 @@ The full graph returns a `final_report` field containing the generated Markdown 
 
 | Layer | Tool | Role |
 |---|---|---|
-| Language | Python 3.12+ | Application runtime |
-| Graph orchestration | LangGraph | Stateful graph execution, interrupts, and fan-out |
-| LLM framework | LangChain | Message handling, structured output, and model integration |
-| LLM provider | OpenAI | Analyst generation, interview responses, and report writing |
-| Web research | Tavily | Search API for retrieval-grounded answers |
-| Configuration | dotenv | Loads local environment variables from `.env` |
-| Package management | uv | Dependency resolution and command execution |
+| Language | Python 3.12+ | Runtime |
+| Orchestration | LangGraph | State graphs, interrupts, fan-out |
+| LLM framework | LangChain | Messages, structured output, rate limiting |
+| LLM provider | Groq (`openai/gpt-oss-20b`) | Analysts, interviews, report writing |
+| Web search | Tavily | Current web results |
+| Encyclopedia search | Wikipedia (`WikipediaLoader`) | Background context |
+| Configuration | python-dotenv | Loads `.env` |
+| Package management | uv | Dependencies and running commands |
 
 ---
 
 ## Limitations
 
-- The project requires valid OpenAI and Tavily API keys.
-- Report quality depends on the specificity of the topic and the quality of Tavily search results.
-- Generated reports should be reviewed before being used for business, academic, legal, medical, or financial decisions.
-- The current `main.py` is a minimal placeholder; the primary workflow is exposed through LangGraph.
-- The interview graph currently includes two similar search nodes, `search_web` and `search_web2`, for parallel retrieval.
+- Free-tier rate limits make full runs slow (several minutes).
+- Search results are trimmed to save tokens, so answers are based on short excerpts.
+- Report quality depends on the topic and on what Tavily and Wikipedia return.
+- `main.py` is a placeholder; the workflow currently runs through LangGraph Studio only.
+- There are no automated tests yet.
+- Generated reports are drafts and should be checked before use in business, academic, legal, medical, or financial decisions.
 
 ---
 
 ## Future Improvements
 
-- Add a polished CLI runner for invoking the full research graph from the terminal.
-- Add automated tests for graph routing, structured output parsing, and report assembly.
-- Add configurable model selection through environment variables.
-- Deduplicate the two Tavily search node implementations.
-- Persist reports to Markdown files or a lightweight database.
-- Add richer source handling with normalized citations and source metadata.
-- Add a Streamlit or FastAPI interface for non-technical users.
+- Generate the search query once per turn and share it between both search nodes (saves one call per turn).
+- Add a CLI runner that saves the report to a Markdown file.
+- Add tests for graph routing, section passing, and report assembly using a fake LLM.
+- Make the model and rate limits configurable through environment variables.
+- Add a Streamlit or FastAPI interface.
 
 ---
 
 ## Security Notes
 
 - Never commit `.env` or real API keys.
-- Rotate keys immediately if they are accidentally pushed to a public repository.
-- Treat generated reports as research drafts, not final professional advice.
+- Rotate keys immediately if they are pushed to a public repository.
 
 ---
 
 ## License
 
-MIT. Use it, extend it, and build on it.
-=======
-# LangGraph_Research_Assistant_Agent
-This project is to create personal assistant using LangGraph from Scratch
->>>>>>> 374985914f0c6354ffc0a77d282f9297b3518c22
+MIT.

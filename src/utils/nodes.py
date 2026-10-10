@@ -4,10 +4,11 @@ from .models import llm
 from .objects import Analyst, Perspectives, SearchQuery
 from .prompts import analyst_instructions, question_instructions, search_instructions, answer_instructions
 from .prompts import section_writer_instructions, intro_conclusion_instructions, report_writer_instructions
-from langchain.messages import SystemMessage, HumanMessage
+from langchain.messages import SystemMessage, HumanMessage, AIMessage
 from langgraph.types import interrupt
 from langchain_tavily import TavilySearch
 from langchain_core.messages import get_buffer_string
+from langchain_community.document_loaders import WikipediaLoader
 
 load_dotenv()
 
@@ -62,6 +63,20 @@ def human_feedback(state: GenerateAnalystState):
 
     return {"human_analyst_feedback": None}
 
+
+def _view_for(messages, speaker: str):
+    """Relabel messages so the speaker's own turns are AI and the other side's turns are Human."""
+    view = []
+    for m in messages:
+        if isinstance(m, AIMessage):
+            is_expert = m.name == "expert"
+            mine = is_expert == (speaker == "expert")
+            view.append(AIMessage(content=m.text) if mine else HumanMessage(content=m.text))
+        else:
+            view.append(m)
+    return view
+
+
 def generate_question(state: InterviewState):
     """Node to generate questions"""
 
@@ -75,61 +90,46 @@ def generate_question(state: InterviewState):
 
     # generate questions
     system_message = question_instructions.format(goals=analyst.persona)
-    questions = llm.invoke([SystemMessage(content=system_message)]+messages)
+    questions = llm.invoke([SystemMessage(content=system_message)] + _view_for(messages, "analyst"))
 
     return {"messages":[questions]}
 
+def _make_query(state: InterviewState) -> str:
+    structured_llm = llm.with_structured_output(SearchQuery)
+    transcript = get_buffer_string(state["messages"])
+    result = structured_llm.invoke([
+        SystemMessage(content=search_instructions),
+        HumanMessage(content=f"Conversation:\n{transcript}"),
+    ])
+    return result.search_query
+
+
 def search_web(state: InterviewState):
-    """retrieve docs from web"""
+    """Retrieve docs from Tavily web search"""
+    try:
+        data = TavilySearch(max_results=2).invoke({"query": _make_query(state)})
+        docs = data.get("results", [])
+    except Exception as e:
+        print(f"Tavily search failed: {e}")
+        return {"context": []}
 
-    # search query
-    structured_llm = llm.with_structured_output(SearchQuery)
-
-    # search instruction
-    search_instruction_system_message = SystemMessage(content=search_instructions)
-    tavily_search = TavilySearch(max_results = 3)
-
-    search_query = structured_llm.invoke([search_instruction_system_message]+state["messages"])
-
-    # web search
-    data = tavily_search.invoke({"query":search_query.search_query})
-    search_docs = data.get("results", data)
-
-    #format
-    formatted_search_docs = "\n\n---\n\n".join(
-        [
-            f'<Document href = "{doc["url"]}"/>\n{doc["content"]}\n</Document>'
-            for doc in search_docs
-        ]
+    formatted = "\n\n---\n\n".join(
+        f'<Document href="{d["url"]}">\n{d["content"][:600]}\n</Document>' for d in docs
     )
+    return {"context": [formatted]}
 
-    return {"context": [formatted_search_docs]}
+def search_wikipedia(state: InterviewState):
+    """Retrieve docs from Wikipedia"""
+    try:
+        docs = WikipediaLoader(query=_make_query(state), load_max_docs=1,doc_content_chars_max=1500,).load()
+    except Exception as e:
+        print(f"Wikipedia search failed: {e}")
+        return {"context": []}
 
-def search_web_2(state: InterviewState):
-    """retrieve docs from web"""
-
-    # search query
-    structured_llm = llm.with_structured_output(SearchQuery)
-
-    # search instruction
-    search_instruction_system_message = SystemMessage(content=search_instructions)
-    tavily_search = TavilySearch(max_results = 3)
-
-    search_query = structured_llm.invoke([search_instruction_system_message]+state["messages"])
-
-    # web search
-    data = tavily_search.invoke({"query":search_query.search_query})
-    search_docs = data.get("results", data)
-
-    #format
-    formatted_search_docs = "\n\n---\n\n".join(
-        [
-            f'<Document href = "{doc["url"]}"/>\n{doc["content"]}\n</Document>'
-            for doc in search_docs
-        ]
+    formatted = "\n\n---\n\n".join(
+        f'<Document source="{d.metadata["source"]}">\n{d.page_content}\n</Document>' for d in docs
     )
-
-    return {"context": [formatted_search_docs]}
+    return {"context": [formatted]}
 
 def generate_answer(state: InterviewState):
     """node to answer a query"""
@@ -137,14 +137,15 @@ def generate_answer(state: InterviewState):
     # get state
     analyst = state["analyst"]
     messages = state["messages"]
-    context = state["context"]
+    context = state["context"][-2:]
 
     if isinstance(analyst, dict):
         analyst = Analyst.model_validate(analyst)
 
     #answer question
     system_message = SystemMessage(content=answer_instructions.format(goals=analyst.persona, context = context))
-    answer= llm.invoke([system_message]+messages)
+    answer = llm.invoke([system_message] + _view_for(messages, "expert"))
+
 
     # name the msg as coming from the expert
     answer.name = "expert"
@@ -174,9 +175,9 @@ def write_section(state: InterviewState):
     system_message = SystemMessage(content=section_writer_instructions.format(focus=analyst.description))
 
     section = llm.invoke([system_message]+
-                         [HumanMessage(content=f"Use this souce to write your section: {context}")])
+                         [HumanMessage(content=f"Interview transcript:\n{interview}\n\nSources:\n{context}\n\nWrite your section.")])
 
-    return {"section":section.content}
+    return {"sections": [section.content]}
 
 def write_report(state: ResearchGraphState):
     # Full set of sections
@@ -221,20 +222,12 @@ def write_conclusion(state: ResearchGraphState):
     return {"conclusion": conclusion.content}
 
 def finalize_report(state: ResearchGraphState):
-    """ The is the "reduce" step where we gather all the sections, combine them, and reflect on them to write the intro/conclusion """
-    # Save full final report
-    content = state["content"]
-    if content.startswith("## Insights"):
-        content = content.strip("## Insights")
-    if "## Sources" in content:
-        try:
-            content, sources = content.split("\n## Sources\n")
-        except:
-            sources = None
-    else:
-        sources = None
+    """Combine intro, body and conclusion into the final report"""
+
+    content = state["content"].removeprefix("## Insights").strip()
+    content, found, sources = content.partition("\n## Sources\n")
 
     final_report = state["introduction"] + "\n\n---\n\n" + content + "\n\n---\n\n" + state["conclusion"]
-    if sources is not None:
+    if found:
         final_report += "\n\n## Sources\n" + sources
     return {"final_report": final_report}

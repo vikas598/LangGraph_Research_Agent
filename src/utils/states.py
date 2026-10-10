@@ -15,7 +15,7 @@ class InterviewState(MessagesState):
     context : Annotated[list , operator.add] # src of docs
     analyst : Analyst # analyst created
     interview : str # transcript of the interview
-    section : int # final key we duplicate in the outer state for Send() api
+    sections : list # final key we duplicate in the outer state for Send() api
 
 class ResearchGraphState(TypedDict):
     topic: str # Research topic

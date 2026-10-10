@@ -13,4 +13,5 @@ dependencies = [
     "langchain-tavily>=0.2.18",
     "langgraph-cli[inmem]>=0.4.31",
     "python-dotenv>=1.2.3",
+    "wikipedia>=1.4.0",
 ]
